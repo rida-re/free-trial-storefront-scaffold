@@ -12,6 +12,7 @@
     "@commercetools/checkout-browser-sdk": "^1.7.2",
     "@commercetools/platform-sdk": "^8.27.0",
     "@commercetools/ts-client": "^4.10.0",
+    "@daily-co/daily-js": "^0.91.0",
     "@vapi-ai/web": "^2.5.2",
     "jose": "^6.2.3",
     "next": "16.2.6",
