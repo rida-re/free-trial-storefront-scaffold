@@ -11,6 +11,8 @@ import { Providers } from '@/components/Providers';
 import { Header } from '@/components/layout/Header';
 import { Footer } from '@/components/layout/Footer';
 import { MiniCart } from '@/components/cart/MiniCart';
+import VapiAssistant from "@/components/voice/vapiAssistant";
+import ElevenLabsAssistant from "@/components/voice/elevenLabsAssistant";
 
 export function generateStaticParams() {
   return routing.locales.map((locale) => ({ locale }));
@@ -62,6 +64,9 @@ export default async function LocaleLayout({
             <main className="flex-1">{children}</main>
             <Footer />
             <MiniCart />
+            {/*  <ElevenLabsAssistant /> */}
+            <VapiAssistant />
+
           </Providers>
         </NextIntlClientProvider>
       </body>
