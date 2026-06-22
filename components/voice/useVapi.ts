@@ -35,11 +35,16 @@ export function useVapi({ vapiRef, processingRef, dispatch }: UseVapiOptions) {
         await vapi.start({
           model: {
             provider: "openai",
-            model: "gpt-4o-mini",
+            model: "gpt-4o",
             messages: [{ role: "system", content: SYSTEM_PROMPT }],
             tools: TOOLS,
           },
-          voice: { provider: "openai", voiceId: "alloy" },
+          voice: {
+            provider: "11labs",
+            voiceId: "Sarah",
+            stability: 0.4,
+            similarityBoost: 0.8,
+          },
           firstMessage: FIRST_MESSAGE,
         });
       }
@@ -109,11 +114,6 @@ export function useVapi({ vapiRef, processingRef, dispatch }: UseVapiOptions) {
       processingRef.current = false;
     });
 
-    vapi.on("function-call", (tc: unknown) => {
-      console.log("function-call:", tc);
-      dispatchOnce(tc as Record<string, unknown>);
-    });
-
     vapi.on("message", (msg: Record<string, unknown>) => {
       if (msg.type === "conversation-item") {
         const item = msg.conversationItem as
@@ -135,7 +135,9 @@ export function useVapi({ vapiRef, processingRef, dispatch }: UseVapiOptions) {
       }
     });
 
-    vapi.on("status-update", (msg: Record<string, unknown>) => {
+    // status-update is not in SDK types but may be emitted at runtime
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (vapi as any).on("status-update", (msg: Record<string, unknown>) => {
       if (msg.status === "ended" && msg.endedReason === "silence-timed-out") {
         setTimeout(() => {
           if (vapiRef.current) startAssistant();

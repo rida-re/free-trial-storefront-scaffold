@@ -4,7 +4,9 @@
 import { useCallback, useEffect, useRef, type MutableRefObject } from "react";
 import { useRouter } from "@/i18n/routing";
 import { usePathname } from "next/navigation";
+import { useSWRConfig } from "swr";
 import { useCartContext } from "@/context/CartProvider";
+import { KEY_SHIPPING_METHODS } from "@/lib/cache-keys";
 import { NAV_TIMEOUT_MS, type ToolResult, type VapiInstance } from "./types";
 
 interface UseVapiToolsOptions {
@@ -21,6 +23,7 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
 
   const router = useRouter();
   const { cart, mutateCart } = useCartContext();
+  const { cache } = useSWRConfig();
 
   // Keep latest cart/mutateCart in refs so the Vapi event listeners
   // (registered once on mount) never act on stale closures.
@@ -193,16 +196,10 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
       if (phone) address.phone = phone;
 
       try {
-        const res = await fetch("/api/cart/address", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            shippingAddress: address,
-            ...(sameBilling ? { billingAddress: address } : {}),
-          }),
-        });
-        const json = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(json.error || "Failed to set address");
+        await mutateCartRef.current.setAddresses(
+          address,
+          sameBilling ? address : undefined,
+        );
 
         return {
           success: true,
@@ -219,20 +216,36 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
     [],
   );
 
+  // ─── Shipping methods: read from SWR cache or fetch ──────────────────────
+
+  type ShippingMethodItem = {
+    id: string;
+    name: string;
+    description?: string;
+    price: { centAmount: number; currencyCode: string };
+    isDefault: boolean;
+  };
+
+  const getShippingMethods = useCallback(async (): Promise<ShippingMethodItem[]> => {
+    // Read from SWR cache first (shared with StepShipping UI component)
+    const swrCache = cache as Map<string, ShippingMethodItem[]>;
+    for (const [key, data] of swrCache.entries()) {
+      const keyStr = Array.isArray(key) ? key[0] : key;
+      if (keyStr === KEY_SHIPPING_METHODS && Array.isArray(data) && data.length) {
+        return data;
+      }
+    }
+    // Fallback: fetch from API if not yet cached
+    const res = await fetch("/api/shipping-methods");
+    if (!res.ok) return [];
+    return ((await res.json()).shippingMethods ?? []) as ShippingMethodItem[];
+  }, [cache]);
+
   // ─── Checkout: list shipping methods ────────────────────────────────────────
 
   const checkoutListShipping = useCallback(async (): Promise<ToolResult> => {
     try {
-      const res = await fetch("/api/shipping-methods");
-      if (!res.ok) throw new Error("Could not fetch shipping methods");
-      const json = await res.json();
-      const methods = json.shippingMethods as Array<{
-        id: string;
-        name: string;
-        description?: string;
-        price: { centAmount: number; currencyCode: string };
-        isDefault: boolean;
-      }>;
+      const methods = await getShippingMethods();
 
       if (!methods?.length) {
         return {
@@ -256,21 +269,15 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
         message: "Failed to list shipping methods",
       };
     }
-  }, []);
+  }, [getShippingMethods]);
 
   // ─── Checkout: select shipping method ───────────────────────────────────────
 
   const checkoutSelectShipping = useCallback(
     async (methodName: string): Promise<ToolResult> => {
       try {
-        // First fetch available methods to find the matching ID
-        const listRes = await fetch("/api/shipping-methods");
-        if (!listRes.ok) throw new Error("Could not fetch shipping methods");
-        const listJson = await listRes.json();
-        const methods = listJson.shippingMethods as Array<{
-          id: string;
-          name: string;
-        }>;
+        // Read methods from SWR cache (shared with StepShipping UI)
+        const methods = await getShippingMethods();
 
         const match = methods.find(
           (m) => m.name.toLowerCase() === methodName.toLowerCase(),
@@ -283,13 +290,7 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
           };
         }
 
-        const res = await fetch("/api/cart/shipping-method", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ shippingMethodId: match.id }),
-        });
-        const json = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(json.error || "Failed to set shipping");
+        await mutateCartRef.current.setShippingMethod(match.id);
 
         return {
           success: true,
@@ -303,7 +304,7 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
         };
       }
     },
-    [],
+    [getShippingMethods],
   );
 
   // ─── Checkout: get status ───────────────────────────────────────────────────
@@ -644,11 +645,13 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
       // Send result back to Vapi so it can respond verbally
       if (vapiRef.current && callId) {
         try {
+          // tool-calls-result is supported at runtime but not in SDK types
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           vapiRef.current.send({
             type: "tool-calls-result",
             toolCallId: callId,
             result,
-          });
+          } as any);
         } catch (sendErr) {
           console.warn("Failed to send result to Vapi:", sendErr);
         }

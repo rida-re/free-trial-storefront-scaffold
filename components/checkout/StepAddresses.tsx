@@ -76,7 +76,18 @@ export function StepAddresses() {
     if (cart?.shippingAddress?.streetName) setShipping({ ...EMPTY, ...cart.shippingAddress, country });
     if (cart?.billingAddress?.streetName) {
       setBilling({ ...EMPTY, ...cart.billingAddress, country });
-      setSameBilling(false);
+      // Detect if billing differs from shipping to set sameBilling correctly
+      const s = cart.shippingAddress;
+      const b = cart.billingAddress;
+      const isSame = !!(
+        b && s &&
+        b.firstName === s.firstName &&
+        b.lastName === s.lastName &&
+        b.streetName === s.streetName &&
+        b.city === s.city &&
+        b.postalCode === s.postalCode
+      );
+      setSameBilling(isSame);
     }
     if (cart?.shippingAddress?.email) setEmail(cart.shippingAddress.email);
   }, [cart, country]);
