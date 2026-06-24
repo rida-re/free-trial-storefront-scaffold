@@ -441,6 +441,61 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
     [],
   );
 
+  // ─── Login with credentials ─────────────────────────────────────────────
+
+  const loginWithCredentials = useCallback(
+    async (email: string, password: string): Promise<ToolResult> => {
+      if (!email || !password) {
+        return {
+          success: false,
+          message: "Email and password are required.",
+        };
+      }
+
+      // Basic email validation
+      if (!email.includes("@") || !email.includes(".")) {
+        return {
+          success: false,
+          message: "That doesn't look like a valid email address. Please try again.",
+        };
+      }
+
+      try {
+        console.log("[login] Attempting login for:", email);
+        
+        const response = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password }),
+        });
+
+        const data = await response.json();
+        console.log("[login] Response:", data);
+
+        if (!response.ok) {
+          return {
+            success: false,
+            message: data.error || "Login failed. Please check your email and password.",
+          };
+        }
+
+        // Login successful
+        const customer = data.customer;
+        return {
+          success: true,
+          message: `Welcome back${customer.firstName ? ", " + customer.firstName : ""}! You're now logged in. Opening your account.`,
+        };
+      } catch (err) {
+        console.error("Login failed:", err);
+        return {
+          success: false,
+          message: "Login failed. Please try again.",
+        };
+      }
+    },
+    [],
+  );
+
   // ─── Tool call dispatcher ───────────────────────────────────────────────────
 
   const dispatch = useCallback(
@@ -481,16 +536,16 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
       try {
         switch (name) {
           case "navigate_to_cart":
-            result = await go("/cart");
+            result = { success: true, message: "Opening your shopping cart." };
+            router.push("/cart");
             break;
           case "navigate_to_home":
-            result = await go("/");
+            result = { success: true, message: "Going to the home page." };
+            router.push("/");
             break;
           case "navigate_to_checkout":
-            result = await go("/checkout");
-            break;
-          case "show_products":
-            result = await go("/search");
+            result = { success: true, message: "Opening checkout." };
+            router.push("/checkout");
             break;
           case "show_category": {
             const category = params.category as string | undefined;
@@ -505,12 +560,50 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
                 .replace(/[^a-z0-9\s-]/g, "")
                 .replace(/\s+/g, "-")
                 .replace(/-+/g, "-");
-              result = slug
-                ? await go(`/category/${slug}`)
-                : {
-                    success: false,
-                    message: "category parameter is invalid",
-                  };
+              
+              if (!slug) {
+                result = {
+                  success: false,
+                  message: "category parameter is invalid",
+                };
+              } else {
+                // Fetch available categories to check if this one exists
+                try {
+                  const categoriesRes = await fetch("/api/categories");
+                  const categoriesData = await categoriesRes.json();
+                  const categories = categoriesData.categories as Array<{ id: string; name: string; slug?: string }>;
+                  
+                  // Check if a category with this slug exists
+                  const found = categories.find(c => c.slug?.toLowerCase() === slug.toLowerCase());
+                  console.log("=====================found ====================: ", found);
+
+                  if (found) {
+                    // Category exists, build success message and navigate immediately
+                    result = {
+                      success: true,
+                      message: `Opening ${found.name} category for you.`,
+                    };
+                    // Trigger navigation without waiting
+                    router.push(`/category/${slug}`);
+                    console.log("[show_category] Navigation triggered to:", slug);
+                  } else {
+                    // Category doesn't exist, return list of available categories
+                    const availableNames = categories
+                      .filter(c => c.slug) // Only include categories that have slugs
+                      .map(c => c.name)
+                      .join(", ");
+                    
+                    result = {
+                      success: false,
+                      message: `I don't see a "${category}" category. Available categories are: ${availableNames || "none"}. Please try again with a different category name.`,
+                    };
+                  }
+                } catch (err) {
+                  console.error("Failed to check category:", err);
+                  // If we can't check, just try to navigate anyway
+                  result = await go(`/category/${slug}`);
+                }
+              }
             }
             break;
           }
@@ -522,7 +615,62 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
                 message: "query parameter is required",
               };
             } else {
-              result = await go(`/search?q=${encodeURIComponent(q)}`);
+              // First, search for products to check if any match
+              try {
+                console.log("[search_products] Searching for:", q);
+                const searchRes = await fetch(
+                  `/api/products/search?q=${encodeURIComponent(q)}&limit=5`,
+                );
+                const searchData = await searchRes.json();
+                console.log("[search_products] API response:", searchData);
+                
+                const products = searchData.products as Array<{
+                  id: string;
+                  name: string;
+                  slug?: string;
+                  price?: { centAmount: number; currencyCode: string } | null;
+                }>;
+
+                console.log("[search_products] Products found:", products?.length, products);
+
+                if (!products?.length) {
+                  // No products found, suggest alternatives
+                  console.log("[search_products] No products found");
+                  result = {
+                    success: false,
+                    message: `No products found for "${q}". Try different keywords or ask me to show you our categories.`,
+                  };
+                } else {
+                  // Products found
+                  const productNames = products
+                    .slice(0, 3)
+                    .map((p) => p.name)
+                    .join(", ");
+                  
+                  console.log("[search_products] Success! Found:", searchData.total, "products");
+                  
+                  // Build result message BEFORE navigation
+                  if (searchData.total === 1) {
+                    result = {
+                      success: true,
+                      message: `I found 1 product: ${productNames}. I'm showing it to you now.`,
+                    };
+                  } else {
+                    result = {
+                      success: true,
+                      message: `I found ${searchData.total} products, including ${productNames}. Here are the results.`,
+                    };
+                  }
+                  
+                  // Trigger navigation but DON'T wait for it (return immediately so Vapi can respond)
+                  router.push(`/search?q=${encodeURIComponent(q)}`);
+                  console.log("[search_products] Navigation triggered");
+                }
+              } catch (err) {
+                console.error("Failed to search products:", err);
+                // If search fails, try to navigate anyway
+                result = await go(`/search?q=${encodeURIComponent(q)}`);
+              }
             }
             break;
           }
@@ -553,31 +701,91 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
             break;
           }
           case "navigate_to_account":
-            result = await go("/account");
+            result = { success: true, message: "Opening your account." };
+            router.push("/account");
             break;
           case "navigate_to_orders":
-            result = await go("/account/orders");
+            result = { success: true, message: "Opening your order history." };
+            router.push("/account/orders");
             break;
           case "navigate_to_login":
-            result = await go("/login");
+            result = { success: true, message: "Opening login page." };
+            router.push("/login");
             break;
           case "navigate_to_register":
-            result = await go("/register");
+            result = { success: true, message: "Opening registration page." };
+            router.push("/register");
             break;
           case "navigate_to_product": {
-            const sku = params.sku as string | undefined;
-            if (!sku) {
+            const productName = params.product_name as string | undefined;
+            if (!productName) {
               result = {
                 success: false,
-                message: "sku parameter is required",
+                message: "product_name parameter is required",
               };
             } else {
-              result = await go(`/product/${encodeURIComponent(sku)}`);
+              // Search for the product by name to find it and get its SKU
+              try {
+                console.log("[navigate_to_product] Searching for product:", productName);
+                const searchRes = await fetch(
+                  `/api/products/search?q=${encodeURIComponent(productName)}&limit=5`,
+                );
+                const searchData = await searchRes.json();
+                const products = searchData.products as Array<{
+                  id: string;
+                  name: string;
+                  slug?: string;
+                  sku?: string;
+                  variants?: Array<{ sku?: string }>;
+                }>;
+
+                if (!products?.length) {
+                  console.log("[navigate_to_product] No products found");
+                  result = {
+                    success: false,
+                    message: `I couldn't find any product matching "${productName}". Try different keywords or ask me to show you our categories.`,
+                  };
+                } else {
+                  // Get the first matching product
+                  const foundProduct = products[0];
+                  
+                  // The API can return SKU in different places:
+                  // 1. Directly on product.sku (simplified API response)
+                  // 2. In product.variants[0].sku (full response)
+                  const sku = foundProduct.sku || foundProduct.variants?.[0]?.sku;
+                  
+                  console.log("[navigate_to_product] Found product:", foundProduct.name);
+                  console.log("[navigate_to_product] Product data:", foundProduct);
+                  console.log("[navigate_to_product] Extracted SKU:", sku);
+                  
+                  if (!sku) {
+                    result = {
+                      success: false,
+                      message: `Found "${foundProduct.name}" but it doesn't have a valid SKU.`,
+                    };
+                  } else {
+                    result = {
+                      success: true,
+                      message: `Opening ${foundProduct.name} product details.`,
+                    };
+                    // Navigate using the SKU we found
+                    router.push(`/product/${encodeURIComponent(sku)}`);
+                    console.log("[navigate_to_product] Navigating to product with SKU:", sku);
+                  }
+                }
+              } catch (err) {
+                console.error("Failed to search product:", err);
+                result = {
+                  success: false,
+                  message: `Failed to search for "${productName}". Please try again.`,
+                };
+              }
             }
             break;
           }
           case "navigate_to_wishlists":
-            result = await go("/wishlists");
+            result = { success: true, message: "Opening your wishlists." };
+            router.push("/wishlists");
             break;
           case "navigate_to_wishlist": {
             const id = params.id as string | undefined;
@@ -587,21 +795,26 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
                 message: "id parameter is required",
               };
             } else {
-              result = await go(`/wishlists/${encodeURIComponent(id)}`);
+              result = { success: true, message: "Opening your wishlist." };
+              router.push(`/wishlists/${encodeURIComponent(id)}`);
             }
             break;
           }
           case "navigate_to_checkout_addresses":
-            result = await go("/checkout/addresses");
+            result = { success: true, message: "Opening address step." };
+            router.push("/checkout/addresses");
             break;
           case "navigate_to_checkout_shipping":
-            result = await go("/checkout/shipping");
+            result = { success: true, message: "Opening shipping step." };
+            router.push("/checkout/shipping");
             break;
           case "navigate_to_checkout_payment":
-            result = await go("/checkout/payment");
+            result = { success: true, message: "Opening payment step." };
+            router.push("/checkout/payment");
             break;
           case "navigate_to_checkout_confirmation":
-            result = await go("/checkout/confirmation");
+            result = { success: true, message: "Opening order confirmation." };
+            router.push("/checkout/confirmation");
             break;
 
           // ── Checkout voice tools ──
@@ -632,6 +845,27 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
               : { success: false, message: "product_name is required" };
             break;
           }
+          case "login_with_credentials": {
+            const email = params.email as string | undefined;
+            const password = params.password as string | undefined;
+            
+            if (!email || !password) {
+              result = {
+                success: false,
+                message: "Email and password are required. Please provide both.",
+              };
+            } else {
+              console.log("[login_with_credentials] Login attempt for:", email);
+              result = await loginWithCredentials(email, password);
+              
+              // If login successful, navigate to account page
+              if (result.success) {
+                console.log("[login_with_credentials] Login successful, navigating to account");
+                router.push("/account");
+              }
+            }
+            break;
+          }
           default:
             result = { success: false, message: `Unknown function: ${name}` };
         }
@@ -645,6 +879,7 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
       // Send result back to Vapi so it can respond verbally
       if (vapiRef.current && callId) {
         try {
+          console.log(`[Vapi] Sending result for tool "${name}":`, result);
           // tool-calls-result is supported at runtime but not in SDK types
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           vapiRef.current.send({
@@ -652,6 +887,7 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
             toolCallId: callId,
             result,
           } as any);
+          console.log(`[Vapi] Result sent successfully`);
         } catch (sendErr) {
           console.warn("Failed to send result to Vapi:", sendErr);
         }
@@ -659,7 +895,7 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
 
       return result;
     },
-    [go, changeQty, getCart, clearCart, applyDiscount, checkoutSetAddress, checkoutListShipping, checkoutSelectShipping, checkoutStatus, checkoutStart, addToCart, vapiRef, processingRef],
+    [go, changeQty, getCart, clearCart, applyDiscount, checkoutSetAddress, checkoutListShipping, checkoutSelectShipping, checkoutStatus, checkoutStart, addToCart, loginWithCredentials, vapiRef, processingRef, router],
   );
 
   return { cart, dispatch };
