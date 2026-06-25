@@ -38,6 +38,8 @@ export function useVapi({ vapiRef, processingRef, dispatch }: UseVapiOptions) {
             model: "gpt-4o",
             messages: [{ role: "system", content: SYSTEM_PROMPT }],
             tools: TOOLS,
+            // Optimize for tool following
+            temperature: 0.3,
           },
           voice: {
             provider: "11labs",
@@ -81,7 +83,7 @@ export function useVapi({ vapiRef, processingRef, dispatch }: UseVapiOptions) {
 
     // Avoid double-dispatching the same tool call
     const seenCallIds = new Set<string>();
-    const dispatchOnce = (tc: Record<string, unknown>) => {
+    const dispatchOnce = async (tc: Record<string, unknown>) => {
       const id = (tc.toolCallId ?? tc.id) as string | undefined;
       if (id) {
         if (seenCallIds.has(id)) return;
@@ -91,7 +93,8 @@ export function useVapi({ vapiRef, processingRef, dispatch }: UseVapiOptions) {
           if (first !== undefined) seenCallIds.delete(first);
         }
       }
-      dispatch(tc);
+      // Wait for the tool to complete before returning
+      await dispatch(tc);
     };
 
     vapi.on("call-start", () => {
@@ -115,6 +118,9 @@ export function useVapi({ vapiRef, processingRef, dispatch }: UseVapiOptions) {
     });
 
     vapi.on("message", (msg: Record<string, unknown>) => {
+
+      console.log("VAPI MESSAGE", msg);
+
       if (msg.type === "conversation-item") {
         const item = msg.conversationItem as
           | { type?: string; role?: string; content?: string }

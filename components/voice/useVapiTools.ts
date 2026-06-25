@@ -391,19 +391,44 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
       if (!Number.isFinite(quantity) || quantity < 1) quantity = 1;
 
       try {
+        console.log("[add_to_cart] Searching for product:", productName);
+        
         // 1. Search for the product by name
-        const searchRes = await fetch(
+        let searchRes = await fetch(
           `/api/products/search?q=${encodeURIComponent(productName)}&limit=5`,
         );
         if (!searchRes.ok) throw new Error("Search failed");
-        const searchData = await searchRes.json();
-
-        const products = searchData.products as Array<{
+        let searchData = await searchRes.json();
+        let products = searchData.products as Array<{
           id: string;
           name: string;
           masterVariantId: number;
           price: { centAmount: number; currencyCode: string } | null;
         }>;
+
+        // If no results, try with simplified keywords (handle STT errors)
+        if (!products?.length) {
+          const keywords = productName
+            .toLowerCase()
+            .replace(/\b(the|a|an|my|your|this|that|for|with|me|show)\b/g, '')
+            .trim();
+          
+          if (keywords && keywords !== productName.toLowerCase()) {
+            console.log("[add_to_cart] Retrying with keywords:", keywords);
+            searchRes = await fetch(
+              `/api/products/search?q=${encodeURIComponent(keywords)}&limit=5`,
+            );
+            if (searchRes.ok) {
+              searchData = await searchRes.json();
+              products = searchData.products as Array<{
+                id: string;
+                name: string;
+                masterVariantId: number;
+                price: { centAmount: number; currencyCode: string } | null;
+              }>;
+            }
+          }
+        }
 
         if (!products?.length) {
           return {
@@ -414,6 +439,7 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
 
         // 2. Pick the best match (first result)
         const product = products[0];
+        console.log("[add_to_cart] Found product:", product.name);
 
         // 3. Add to cart via mutateCart
         await mutateCartRef.current.addItem(
@@ -727,17 +753,42 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
               // Search for the product by name to find it and get its SKU
               try {
                 console.log("[navigate_to_product] Searching for product:", productName);
-                const searchRes = await fetch(
+                
+                // Try exact search first
+                let searchRes = await fetch(
                   `/api/products/search?q=${encodeURIComponent(productName)}&limit=5`,
                 );
-                const searchData = await searchRes.json();
-                const products = searchData.products as Array<{
+                let searchData = await searchRes.json();
+                let products = searchData.products as Array<{
                   id: string;
                   name: string;
                   slug?: string;
                   sku?: string;
                   variants?: Array<{ sku?: string }>;
                 }>;
+
+                // If no results, try with keywords only (remove common filler words)
+                if (!products?.length) {
+                  const keywords = productName
+                    .toLowerCase()
+                    .replace(/\b(the|a|an|my|your|this|that|for|with)\b/g, '')
+                    .trim();
+                  
+                  if (keywords !== productName.toLowerCase()) {
+                    console.log("[navigate_to_product] Retrying with keywords:", keywords);
+                    searchRes = await fetch(
+                      `/api/products/search?q=${encodeURIComponent(keywords)}&limit=5`,
+                    );
+                    searchData = await searchRes.json();
+                    products = searchData.products as Array<{
+                      id: string;
+                      name: string;
+                      slug?: string;
+                      sku?: string;
+                      variants?: Array<{ sku?: string }>;
+                    }>;
+                  }
+                }
 
                 if (!products?.length) {
                   console.log("[navigate_to_product] No products found");
@@ -880,12 +931,17 @@ export function useVapiTools({ vapiRef, processingRef }: UseVapiToolsOptions) {
       if (vapiRef.current && callId) {
         try {
           console.log(`[Vapi] Sending result for tool "${name}":`, result);
-          // tool-calls-result is supported at runtime but not in SDK types
+          
+          // Send result as JSON string - Vapi's LLM will parse and use the message
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           vapiRef.current.send({
             type: "tool-calls-result",
             toolCallId: callId,
-            result,
+            result: result.message
+            /*result: JSON.stringify({
+              success: result.success,
+              message: result.message
+            }) */
           } as any);
           console.log(`[Vapi] Result sent successfully`);
         } catch (sendErr) {
